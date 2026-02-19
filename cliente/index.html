@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Cliente WebSocket - Juego</title>
+<style>
+    body {
+        margin: 0;
+        background: #888;
+        overflow: hidden;
+    }
+    canvas {
+        display: block;
+        background: #000;
+    }
+</style>
+</head>
+<body>
+
+<canvas id="game" width="1920" height="1080"></canvas>
+
+<script>
+// -------------------------------
+// CONFIGURACIÓN DEL CANVAS
+// -------------------------------
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+
+let explosionesLocales = [];
+
+// Información del spritesheet
+const explosionImg = new Image();
+explosionImg.src = "explosion.png"; // Fichero 5x5
+
+// Sprite del enemigo
+const enemyImg = new Image();
+enemyImg.src = "enemy.png"; // Asegúrate de que el PNG esté en la misma carpeta
+
+// Sprite de la nave
+const naveImg = new Image();
+naveImg.src = "nave.png";
+
+
+
+const EXP_ROWS = 5;
+const EXP_COLS = 5;
+const EXP_TOTAL_FRAMES = EXP_ROWS * EXP_COLS; // 25
+
+function resize() {
+  //  canvas.width = window.innerWidth;
+  //  canvas.height = window.innerHeight;
+}
+//resize();
+window.onresize = resize;
+
+// -------------------------------
+// CONEXIÓN WEBSOCKET
+// -------------------------------
+const socket = new WebSocket("ws://localhost:8025/ws/game");
+
+let naves = [];
+let proyectiles = [];
+let enemigos = [];
+
+socket.onopen = () => console.log("Conectado al servidor WebSocket");
+
+socket.onmessage = (event) => {
+    const data = JSON.parse(event.data);
+
+    if (data.type === "state") {
+        naves = data.naves || [];
+        proyectiles = data.proyectiles || [];
+        enemigos = data.enemigos || [];
+
+        // Añadir explosiones nuevas sin borrar las existentes 
+        if (data.explosiones) { 
+            for (const e of data.explosiones) { 
+                explosionesLocales.push({ 
+                    pos: e.pos, 
+                    frameActual: 0, 
+                    framesTotales: EXP_TOTAL_FRAMES
+                }); 
+            }
+        }
+    }
+};
+
+socket.onclose = () => console.log("Desconectado del servidor");
+
+// -------------------------------
+// GESTIÓN DE TECLAS
+// -------------------------------
+const keys = {
+    ArrowUp: false,
+    ArrowDown: false,
+    ArrowLeft: false,
+    ArrowRight: false,
+    Space: false
+};
+
+function sendAction(action) {
+    socket.send(JSON.stringify({
+        type: "input",
+        action: action
+    }));
+}
+
+document.addEventListener("keydown", (e) => {
+    if (!(e.code in keys)) return;
+
+    if (keys[e.code]) return;
+
+    keys[e.code] = true;
+
+    switch (e.code) {
+        case "ArrowUp":    sendAction("accelerate"); break;
+        case "ArrowDown":  sendAction("decelerate"); break;
+        case "Space":      sendAction("shoot"); break;
+    }
+});
+
+document.addEventListener("keyup", (e) => {
+    if (e.code in keys) keys[e.code] = false;
+});
+
+// -------------------------------
+// DIBUJAR OBJETOS
+// -------------------------------
+function drawNaveOLD(nave) {
+    const verts = nave.vertices;
+    if (!verts || verts.length < 3) return;
+
+    ctx.beginPath();
+    ctx.moveTo(verts[1].x, verts[1].y);
+
+    for (let i = 2; i < verts.length; i++) {
+        ctx.lineTo(verts[i].x, verts[i].y);
+    }
+
+    ctx.closePath();
+    ctx.strokeStyle = "white";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+}
+
+function drawNave(nave) {
+    const verts = nave.vertices;
+    if (!verts || verts.length < 2) return;
+
+    // Centro de la nave
+    const cx = verts[0].x;
+    const cy = verts[0].y;
+
+    // Proa de la nave
+    const px = verts[1].x;
+    const py = verts[1].y;
+
+    // Ángulo hacia la proa
+    const angle = Math.atan2(py - cy, px - cx) + Math.PI / 2;
+
+    // Si la imagen no está lista, dibuja el triángulo original
+    if (!naveImg.complete || naveImg.naturalWidth === 0) {
+        ctx.beginPath();
+        ctx.moveTo(verts[1].x, verts[1].y);
+        for (let i = 2; i < verts.length; i++) {
+            ctx.lineTo(verts[i].x, verts[i].y);
+        }
+        ctx.closePath();
+        ctx.strokeStyle = "white";
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        return;
+    }
+
+    // -------------------------
+    // ESCALADO AUTOMÁTICO
+    // -------------------------
+
+    // Distancia centro → proa = "radio" de la nave
+    const dx = px - cx;
+    const dy = py - cy;
+    const radio = Math.sqrt(dx*dx + dy*dy);
+
+    // Queremos que el sprite ocupe un cuadrado de lado 2*radio
+    const targetSize = radio * 2;
+
+    // Mantener proporción del PNG original
+    const iw = naveImg.naturalWidth;
+    const ih = naveImg.naturalHeight;
+    const aspect = iw / ih;
+
+    let dw = targetSize;
+    let dh = targetSize;
+
+    if (aspect > 1) {
+        // Imagen más ancha que alta
+        dh = dw / aspect;
+    } else if (aspect < 1) {
+        // Imagen más alta que ancha
+        dw = dh * aspect;
+    }
+
+    // -------------------------
+    // DIBUJAR SPRITE ROTADO
+    // -------------------------
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(angle);
+    ctx.drawImage(naveImg, -dw / 2, -dh / 2, dw, dh);
+    ctx.restore();
+}
+
+
+
+
+function drawProyectil(p) {
+    ctx.beginPath();
+    ctx.arc(p.pos.x, p.pos.y, p.radio, 0, Math.PI * 2);
+    ctx.fillStyle = "red";
+    ctx.fill();
+}
+/*
+function drawEnemigo(e) {
+    ctx.beginPath();
+    ctx.arc(e.pos.x, e.pos.y, e.radio, 0, Math.PI * 2);
+    ctx.strokeStyle = "yellow";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+}
+*/
+
+
+function drawEnemigo(e) {
+    // Si la imagen aún no cargó, dibuja un círculo como fallback
+    if (!enemyImg.complete || enemyImg.naturalWidth === 0) {
+        ctx.beginPath();
+        ctx.arc(e.pos.x, e.pos.y, e.radio, 0, Math.PI * 2);
+        ctx.strokeStyle = "yellow";
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        return;
+    }
+
+    // Queremos que el sprite encaje en un cuadrado de lado 2*radio (diámetro)
+    const targetSize = e.radio * 2;
+
+    // Mantener proporción del PNG original
+    const iw = enemyImg.naturalWidth;
+    const ih = enemyImg.naturalHeight;
+    let dw = targetSize;
+    let dh = targetSize;
+    const imgAspect = iw / ih;
+
+    if (imgAspect > 1) {
+        // imagen más ancha que alta
+        dh = dw / imgAspect;
+    } else if (imgAspect < 1) {
+        // imagen más alta que ancha
+        dw = dh * imgAspect;
+    }
+
+    // Dibujar centrado en (e.pos.x, e.pos.y)
+    const dx = e.pos.x - dw / 2;
+    const dy = e.pos.y - dh / 2;
+
+    // Si tu sprite tiene brillo/halo, considera desactivar pixel snapping
+    ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(enemyImg, dx, dy, dw, dh);
+}
+
+
+function drawExplosion(e) {
+    if (!explosionImg.complete) return;
+
+    const frame = e.frameActual;
+    if (frame >= EXP_TOTAL_FRAMES) return;
+
+    const frameWidth = explosionImg.width / EXP_COLS;
+    const frameHeight = explosionImg.height / EXP_ROWS;
+
+    const row = Math.floor(frame / EXP_COLS);
+    const col = frame % EXP_COLS;
+
+    ctx.drawImage(
+        explosionImg,
+        col * frameWidth,
+        row * frameHeight,
+        frameWidth, frameHeight,
+        e.pos.x - frameWidth / 2,
+        e.pos.y - frameHeight / 2,
+        frameWidth, frameHeight
+    );
+}
+
+// -------------------------------
+// BUCLE DE RENDERIZADO Y ENTRADAS
+// -------------------------------
+function loop() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    if (keys.ArrowLeft)  sendAction("rotate_left");
+    if (keys.ArrowRight) sendAction("rotate_right");
+
+    for (const nave of naves) 
+        drawNave(nave);
+    
+    for (const p of proyectiles) 
+        drawProyectil(p);
+    
+    for (const e of enemigos) 
+        drawEnemigo(e);
+
+    // Explosiones locales animadas en el cliente
+    for (let i = explosionesLocales.length - 1; i >= 0; i--) {
+        const exp = explosionesLocales[i];
+
+        drawExplosion(exp);
+
+        exp.frameActual++;
+
+        if (exp.frameActual >= exp.framesTotales) {
+            explosionesLocales.splice(i, 1);
+        }
+    }
+
+    requestAnimationFrame(loop);
+}
+
+loop();
+</script>
+
+</body>
+</html>
